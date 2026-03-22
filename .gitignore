@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+backend/venv/
+frontend/node_modules/
+
+# Env files
+.env
+backend/.env
+frontend/.env
+
+# Build / tooling
+dist/
+build/
+
+# Chroma / vector database
+rbu_chroma_db/
+backend/rbu_chroma_db/
+*.sqlite3
+*.sqlite
+*.db
+*.chroma
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
