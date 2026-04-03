@@ -1,5 +1,5 @@
-"""
-main.py — FastAPI Backend for RBU AI Assistant
+﻿"""
+main.py â€” FastAPI Backend for RBU AI Assistant
 Provides /stats and /chat endpoints.
 Runs the scraper on startup if needed (in a background thread).
 """
@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Ensure we can import local modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scraper import (
@@ -32,21 +31,14 @@ DEFAULT_STARTUP_URLS = [
     "https://rbunagpur.in/admission-process/",
     "https://rbunagpur.in/eligibility-criteria/",
     "https://rbunagpur.in/program-list-2026-2027/",
+    "https://rbunagpur.in/program-list/",
     "https://rbunagpur.in/fees-structure-26-27/",
+    "https://rbunagpur.in/fees-structure/",
     "https://rbunagpur.in/direct-second-year-admissions/",
-    "https://rbunagpur.in/placement-report/",
-    "https://rbunagpur.in/recruiters/",
     "https://rbunagpur.in/hostel-facilities/",
-    "https://rbunagpur.in/directors/",
-    "https://rbunagpur.in/deans/",
     "https://rbunagpur.in/accreditation-rankings/",
-    "https://rbunagpur.in/academic-calendar/",
     "https://rbunagpur.in/interdisciplinary-studies/",
-    "https://rbunagpur.in/important-dates/",
     "https://rbunagpur.in/scholarships-financial-aid/",
-    "https://rbunagpur.in/clubs-societies/",
-    "https://rbunagpur.in/placement-census/",
-    "https://rbunagpur.in/team-cdpc/",
     "https://rbunagpur.in/higher-education/"
 
 ]
@@ -54,7 +46,7 @@ DEFAULT_STARTUP_URLS = [
 
 MANDATORY_RESPONSES = {
     "small_talk": "Hello! I am Niaa, the official RBU Information Assistant. I can help you with admissions, fees, placements, eligibility, and campus details.",
-    "short_confirmation": "Sure. Please tell me what you want to know about RBU, for example admissions, fees, placements, deans, directors, or Team CDPC.",
+    "short_confirmation": "Sure. Please tell me what you want to know about RBU, for example admissions, fees, placements, hostel, scholarships, or eligibility.",
     "competitor_comparison": "Comparing colleges is personal. I can walk you through RBU's specific strengths, like our A+ NAAC grade and placement trends, so you can weigh them against your other options. Want me to pull those up?",
     "admission_probability": "I can't guarantee admission as cutoffs shift yearly based on applicants. However, I can show you the previous year's cutoff trends to give you a realistic sense of the competition. Shall we look at the 2024-25 table?",
     "eligibility_doubt": "Eligibility for unique cases like gap years is decided by the admissions committee. I can show you the general criteria, but for your specific situation, it's best to contact the RBU office directly. Want their number?",
@@ -98,11 +90,9 @@ def _detect_mandatory_case(question: str) -> str | None:
     """Return mandatory case key for policy routing; otherwise None."""
     q = _normalize_query(question)
 
-    # Handle contextless short confirmations to keep conversation focused.
     if q in {"yes", "yeah", "yup", "ok", "okay", "hmm", "hmm ok"}:
         return "short_confirmation"
 
-    # 0) Greeting / small-talk should not trigger retrieval sources.
     small_talk_words = [
         "hello",
         "hi",
@@ -116,13 +106,11 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any_phrase(q, small_talk_words):
         return "small_talk"
 
-    # 1) Competitor comparison
     compare_words = ["compare", "comparison", "vs", "versus", "better than", "best college"]
     college_words = ["college", "university", "institute", "iit", "nit", "vit", "mit", "iiit", "bits"]
     if _contains_any(q, compare_words) and _contains_any(q, college_words):
         return "competitor_comparison"
 
-    # 2) Admission probability / guarantees
     admission_prob_words = [
         "guarantee admission",
         "guaranteed admission",
@@ -138,7 +126,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, admission_prob_words):
         return "admission_probability"
 
-    # 3) Eligibility edge cases requiring committee confirmation
     eligibility_words = ["eligible", "eligibility", "can i apply", "can i get admission"]
     edge_case_words = [
         "gap year",
@@ -154,7 +141,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, eligibility_words) and _contains_any(q, edge_case_words):
         return "eligibility_doubt"
 
-    # 4) Non-RBU academic assistance
     academic_help_words = [
         "homework",
         "assignment",
@@ -171,7 +157,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, academic_help_words) or _contains_verb_object_intent(q, academic_gen_verbs, academic_gen_objects):
         return "academic_assistance"
 
-    # 5) Bot identity and origin
     identity_words = [
         "who are you",
         "what are you",
@@ -185,7 +170,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, identity_words):
         return "identity_origin"
 
-    # 6) Irrelevant requests
     irrelevant_words = [
         "weather",
         "recipe",
@@ -198,12 +182,10 @@ def _detect_mandatory_case(question: str) -> str | None:
         "horoscope",
         "translate this",
     ]
-    # Keep this list focused on RBU-specific intent words.
     rbu_context_words = ["rbu", "ramdeobaba", "admission", "fees", "placement", "hostel"]
     if _contains_any(q, irrelevant_words) and not _contains_any(q, rbu_context_words):
         return "irrelevant_requests"
 
-    # 7) Faculty/student privacy requests
     privacy_words = [
         "personal number",
         "mobile number",
@@ -218,7 +200,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, privacy_words):
         return "privacy_request"
 
-    # 8) Financial bargaining/discount asks
     bargaining_words = [
         "discount",
         "reduce fee",
@@ -233,7 +214,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, bargaining_words):
         return "financial_bargaining"
 
-    # 9) Future speculation on fees/placements
     future_words = [
         "predict",
         "future",
@@ -249,7 +229,6 @@ def _detect_mandatory_case(question: str) -> str | None:
     if _contains_any(q, future_words):
         return "future_speculation"
 
-    # 10) Direct transaction requests
     transaction_words = [
         "take payment",
         "pay fees here",
@@ -281,7 +260,6 @@ def _get_startup_urls() -> list[str]:
         return list(dict.fromkeys(urls))
     return DEFAULT_STARTUP_URLS
 
-# Track scraping status
 scraping_status = {"running": False, "done": False, "message": ""}
 
 
@@ -302,7 +280,7 @@ def _run_scraper_background(
         if documents:
             scraping_status["message"] = f"Indexing {len(documents)} documents..."
             count = store_documents(documents)
-            scraping_status["message"] = f"Done — indexed {count} chunks."
+            scraping_status["message"] = f"Done â€” indexed {count} chunks."
             print(f"[Server] Indexed {count} chunks into ChromaDB.")
         else:
             scraping_status["message"] = "No documents scraped."
@@ -315,7 +293,6 @@ def _run_scraper_background(
         scraping_status["done"] = True
 
 
-# --- Lifespan: kick off scraper in background if needed ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Auto-seed the DB from startup URLs when empty; skip when indexed."""
@@ -347,7 +324,6 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# --- App setup ---
 app = FastAPI(
     title="RBU Nagpur AI Assistant",
     description="RAG-powered chatbot for RBU Nagpur university information",
@@ -355,7 +331,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS — allow React frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -365,7 +340,6 @@ app.add_middleware(
 )
 
 
-# --- Models ---
 class ChatRequest(BaseModel):
     question: str
 
@@ -384,7 +358,6 @@ class PolicyTestRequest(BaseModel):
     question: str
 
 
-# --- Endpoints ---
 @app.get("/stats")
 async def stats():
     """Return knowledge base statistics."""
@@ -397,7 +370,6 @@ async def chat(request: ChatRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    # Mandatory guardrail layer before RAG retrieval/generation.
     policy_answer = _route_mandatory_case(request.question)
     if policy_answer:
         return ChatResponse(answer=policy_answer, sources=[])

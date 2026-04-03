@@ -1,5 +1,12 @@
 # RBU AI Assistant: End-to-End Workflow and System Theory
 
+## 0. Latest implementation delta
+
+- Added LLM outage resilience in `backend/brain.py`.
+- When Hugging Face Router fails (DNS resolution, network timeout, HTTP error, or missing token), `generate_response()` now builds a retrieval-only fallback answer from relevant Chroma contexts.
+- This prevents user-visible raw exception strings like `HTTPSConnectionPool(... NameResolutionError ...)` and still returns useful source-grounded information.
+- Source URLs are preserved in fallback responses.
+
 ## 1. Purpose and System Context
 The project is a domain-focused RAG assistant for RBU Nagpur. Its objective is not generic conversation quality, but reliable, source-grounded answers for university queries such as admissions, eligibility, fees, placements, recruiters, and hostel facilities.
 

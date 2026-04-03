@@ -1,5 +1,5 @@
-"""
-scraper.py — RBU Nagpur Website Scraper
+﻿"""
+scraper.py â€” RBU Nagpur Website Scraper
 Scrapes provided URLs, extracts clean text, tables, and OCR content.
 """
 
@@ -34,7 +34,6 @@ HEADERS = {
     )
 }
 
-# Silence repeated BeautifulSoup decode warnings after we apply controlled decoding.
 warnings.filterwarnings(
     "ignore",
     message="Some characters could not be decoded, and were replaced with REPLACEMENT CHARACTER.*"
@@ -61,17 +60,14 @@ def extract_tables_as_markdown(soup: BeautifulSoup) -> str:
 
 def clean_text(soup: BeautifulSoup) -> str:
     """Extract clean text from a page, removing nav, footer, scripts, etc."""
-    # Remove unwanted elements
     for tag in soup.find_all(['nav', 'footer', 'script', 'style', 'noscript',
                                'header', 'aside']):
         tag.decompose()
 
-    # Remove social media links and sharing buttons
     for el in soup.find_all(class_=re.compile(
             r'(social|share|footer|menu|nav|sidebar|widget|cookie)', re.I)):
         el.decompose()
 
-    # Get the main content area
     main = soup.find('main') or soup.find('article') or soup.find(
         'div', class_=re.compile(r'(content|entry|post|page)', re.I))
 
@@ -81,7 +77,6 @@ def clean_text(soup: BeautifulSoup) -> str:
         body = soup.find('body')
         text = body.get_text(separator='\n', strip=True) if body else ""
 
-    # Clean up excessive whitespace
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     return '\n'.join(lines)
 
@@ -156,13 +151,10 @@ def scrape_page(url: str) -> dict | None:
 
         title = soup.title.string.strip() if soup.title and soup.title.string else url
 
-        # Extract tables as markdown
         tables_md = extract_tables_as_markdown(soup)
 
-        # Extract clean text
         text = clean_text(soup)
 
-        # Some pages are heavily template-driven; keep a fallback pass.
         if not text:
             fallback_lines = []
             for node in soup.find_all(["h1", "h2", "h3", "h4", "h5", "p", "li"]):
@@ -170,7 +162,6 @@ def scrape_page(url: str) -> dict | None:
                 if line and len(line) > 2:
                     fallback_lines.append(line)
 
-            # De-duplicate while preserving order.
             seen = set()
             compact_lines = []
             for line in fallback_lines:
@@ -183,21 +174,18 @@ def scrape_page(url: str) -> dict | None:
             if compact_lines:
                 text = "\n".join(compact_lines[:500])
 
-        # OCR from linked PDFs
         pdf_ocr_texts = []
         for pdf_url in extract_pdf_links(soup, url):
             ocr_text = ocr_pdf_from_url(pdf_url)
             if ocr_text:
                 pdf_ocr_texts.append(f"### OCR from PDF: {pdf_url}\n{ocr_text}")
 
-        # OCR from page images
         image_ocr_texts = []
         for image_url in extract_image_links(soup, url)[:5]:
             ocr_text = ocr_image_from_url(image_url)
             if ocr_text:
                 image_ocr_texts.append(f"### OCR from Image: {image_url}\n{ocr_text}")
 
-        # Combine: tables are important, put them first
         combined = ""
         if tables_md:
             combined += f"## Tables from: {title}\n\n{tables_md}\n\n"
@@ -229,7 +217,6 @@ def extract_urls_from_text(text: str) -> list[str]:
     matches = re.findall(r"https?://[^\s]+", text)
     cleaned = []
     for value in matches:
-        # Drop accidental trailing punctuation from copy-paste.
         cleaned.append(value.rstrip(",;)]}"))
     return list(dict.fromkeys(cleaned))
 

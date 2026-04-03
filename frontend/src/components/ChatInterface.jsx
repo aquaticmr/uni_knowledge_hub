@@ -73,7 +73,7 @@ function ChatInterface() {
         {
           role: "assistant",
           content:
-            "I could not reach the backend right now. Please verify FastAPI is running on http://127.0.0.1:8000."
+            `I could not reach the backend right now. Please verify FastAPI is running on ${API_BASE_URL}.`
         }
       ]);
     } finally {

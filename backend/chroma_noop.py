@@ -1,4 +1,4 @@
-"""No-op Chroma telemetry client to avoid posthog/runtime telemetry issues."""
+﻿"""No-op Chroma telemetry client to avoid posthog/runtime telemetry issues."""
 
 from overrides import override
 from chromadb.config import System
@@ -11,5 +11,4 @@ class NoOpTelemetry(ProductTelemetryClient):
 
     @override
     def capture(self, event: ProductTelemetryEvent) -> None:
-        # Intentionally drop all telemetry events.
         return

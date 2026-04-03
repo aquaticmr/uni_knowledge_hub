@@ -1,5 +1,5 @@
-"""
-brain.py — RAG Logic with ChromaDB and HuggingFace
+﻿"""
+brain.py â€” RAG Logic with ChromaDB and HuggingFace
 Handles text chunking, embedding, storage, retrieval,
 and LLM response generation.
 """
@@ -8,9 +8,7 @@ import os
 import re
 from difflib import SequenceMatcher
 import requests
-from bs4 import BeautifulSoup
 
-# Disable Chroma telemetry early (must be set before importing chromadb).
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
 os.environ.setdefault("CHROMA_PRODUCT_TELEMETRY_IMPL", "chroma_noop.NoOpTelemetry")
 
@@ -29,11 +27,8 @@ LLM_MODEL = os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 HF_ROUTER_URL = "https://router.huggingface.co/v1/chat/completions"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-# Use Chroma's ONNX MiniLM embedding function.
-# This avoids pulling full PyTorch from sentence-transformers.
 embedder = embedding_functions.DefaultEmbeddingFunction()
 
-# Initialize ChromaDB client (persistent) with telemetry disabled
 chroma_client = chromadb.PersistentClient(
     path=CHROMA_DIR,
     settings=Settings(anonymized_telemetry=False)
@@ -46,6 +41,91 @@ STOPWORDS = {
     "was", "were", "what", "when", "where", "who", "why", "how", "with", "about",
     "please", "tell", "me", "details", "detail", "give", "everything", "evrthing", "all"
 }
+
+EXCLUDED_SOURCE_URL_PARTS = (
+    "/deans/",
+    "/directors/",
+    "/team-cdpc/",
+)
+
+
+def _is_excluded_source(url: str) -> bool:
+    value = (url or "").lower()
+    return any(part in value for part in EXCLUDED_SOURCE_URL_PARTS)
+
+
+def _is_fees_source(url: str) -> bool:
+    value = (url or "").lower()
+    return "/fees-structure" in value
+
+
+def _is_programs_query(question: str) -> bool:
+    q = (question or "").lower()
+    has_program_word = any(
+        token in q
+        for token in [
+            "program",
+            "programme",
+            "progrms",
+            "programe",
+            "course",
+            "courses",
+            "branch",
+            "branches",
+        ]
+    )
+    has_offer_intent = any(token in q for token in ["offered", "offer", "available", "list", "all", "what are"])
+    has_entity = any(token in q for token in ["rbu", "ramdeobaba", "college", "university"])
+    return has_program_word and (has_offer_intent or has_entity)
+
+
+def _is_programs_source(url: str) -> bool:
+    value = (url or "").lower()
+    return "/program-list" in value
+
+
+def _sentences(text: str) -> list[str]:
+    """Split text into simple sentence-like fragments."""
+    parts = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _build_fallback_answer(question: str, contexts: list[dict], reason: str | None = None) -> str:
+    """Build a retrieval-only answer when the remote LLM is unavailable."""
+    terms = _query_terms(question)
+    selected: list[str] = []
+
+    for ctx in contexts:
+        title = (ctx.get("title") or "RBU source").strip()
+        text = ctx.get("text") or ""
+        sentences = _sentences(text)
+
+        matching = []
+        for sentence in sentences:
+            lower = sentence.lower()
+            if not terms or any(term in lower for term in terms):
+                matching.append(sentence)
+
+        candidates = matching[:2] if matching else sentences[:2]
+        if not candidates:
+            continue
+
+        snippet = " ".join(candidates).strip()
+        if snippet:
+            selected.append(f"{title}: {snippet}")
+
+        if len(selected) >= 3:
+            break
+
+    if not selected:
+        return "I could not generate a detailed answer right now, but relevant RBU sources were found. Please try again in a moment."
+
+    preface = "I am having trouble reaching the language model right now, but here is what I found from official RBU data:"
+    if reason:
+        preface = f"I am having trouble reaching the language model right now ({reason}), but here is what I found from official RBU data:"
+
+    lines = [f"{idx}. {item}" for idx, item in enumerate(selected, 1)]
+    return preface + "\n" + "\n".join(lines)
 
 
 def _to_plain_text(answer: str) -> str:
@@ -73,14 +153,11 @@ def _fuzzy_token_overlap(query_terms: set[str], context_text: str) -> bool:
     if not context_terms:
         return False
 
-    # Exact overlap first.
     if query_terms.intersection(context_terms):
         return True
 
-    # Fuzzy overlap to tolerate typos like "acadmic" or "scholership".
     for q in query_terms:
         for c in context_terms:
-            # Skip very different token lengths to reduce false matches.
             if abs(len(q) - len(c)) > 3:
                 continue
             if SequenceMatcher(None, q, c).ratio() >= 0.78:
@@ -98,8 +175,6 @@ def _is_relevant_context(question: str, context_text: str, distance: float | Non
     if _fuzzy_token_overlap(terms, context_text):
         return True
 
-    # Distance fallback: allow semantically close matches even with typos.
-    # Chroma cosine distance tends to be smaller for better matches.
     if distance is not None and distance <= 0.65:
         return True
 
@@ -116,19 +191,22 @@ def _is_no_info_answer(answer: str) -> bool:
         "not available in the context",
         "don't have any information",
         "do not have any information",
-        "from the provided context",
         "please provide more details",
     ]
     return any(marker in text for marker in markers)
 
 
 def _is_rbu_overview_query(question: str) -> bool:
-    """Detect broad 'tell me everything about RBU' style questions."""
+    """Detect broad overview asks like 'tell me about RBU/college'."""
     q = (question or "").lower()
-    has_rbu_entity = any(token in q for token in ["rbu", "ramdeobaba", "nagpur university"])
+    has_rbu_entity = any(token in q for token in ["rbu", "ramdeobaba", "nagpur university", "college", "university"])
     has_overview_intent = any(
         token in q
         for token in [
+            "tell me about",
+            "about rbu",
+            "about college",
+            "about university",
             "tell me everything",
             "evrthing",
             "everything",
@@ -141,105 +219,18 @@ def _is_rbu_overview_query(question: str) -> bool:
     return has_rbu_entity and has_overview_intent
 
 
-def _is_deans_query(question: str) -> bool:
+def _is_fees_query(question: str) -> bool:
     q = (question or "").lower()
-    return "dean" in q
+    return any(token in q for token in ["fee", "fees", "fee structure", "tuition", "caution money", "development fee"])
 
 
-def _is_directors_query(question: str) -> bool:
+def _is_hostel_query(question: str) -> bool:
     q = (question or "").lower()
-    return "director" in q
+    return any(token in q for token in ["hostel", "accommodation", "mess", "room", "boarding"])
 
 
-def _is_cdpc_query(question: str) -> bool:
-    q = (question or "").lower()
-    return "cdpc" in q or ("team" in q and "placement" in q)
-
-
-def _extract_people_names_from_url(url: str) -> list[str]:
-    """Fetch a page and extract person names prefixed with Dr."""
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = "\n".join(
-            node.get_text(" ", strip=True)
-            for node in soup.find_all(["h1", "h2", "h3", "h4", "h5", "p", "li"])
-        )
-    except Exception:
-        return []
-
-    heading_matches = []
-    for node in soup.find_all(["h3", "h4", "h5"]):
-        line = node.get_text(" ", strip=True)
-        if "dr" in line.lower():
-            heading_matches.append(line)
-
-    raw_matches = heading_matches + re.findall(r"\bDr\.?\s*[A-Z][A-Za-z.\s]{2,60}", text)
-    cleaned = []
-    for item in raw_matches:
-        name = re.sub(r"\s+", " ", item).strip()
-        # Remove role/title tails if they are glued to the name segment.
-        name = re.split(
-            r"\b(Dean|Director|School|Career|Development|Placement|Research|Admissions|Quality|Students)\b",
-            name,
-            maxsplit=1,
-        )[0].strip()
-        # Normalize common missing-space variant, e.g. 'Dr.Sanjay'.
-        name = re.sub(r"^Dr\.", "Dr. ", name)
-        name = re.sub(r"^Dr\s+", "Dr. ", name)
-        name = re.sub(r"\s{2,}", " ", name)
-        if len(name) >= 6:
-            cleaned.append(name)
-
-    # Keep order while removing duplicates.
-    seen = set()
-    unique = []
-    for name in cleaned:
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(name)
-    return unique
-
-
-def _deterministic_people_response(question: str) -> dict | None:
-    """Return deterministic answers for governance/team people-list asks."""
-    if _is_deans_query(question):
-        url = "https://rbunagpur.in/deans/"
-        names = _extract_people_names_from_url(url)
-        if names:
-            lines = [f"{idx}. {name}" for idx, name in enumerate(names, 1)]
-            return {
-                "answer": "As per the official RBU Deans page, the dean names are:\n" + "\n".join(lines),
-                "sources": [url],
-            }
-
-    if _is_directors_query(question):
-        url = "https://rbunagpur.in/directors/"
-        names = _extract_people_names_from_url(url)
-        if names:
-            lines = [f"{idx}. {name}" for idx, name in enumerate(names, 1)]
-            return {
-                "answer": "As per the official RBU Directors page, the director names are:\n" + "\n".join(lines),
-                "sources": [url],
-            }
-
-    if _is_cdpc_query(question):
-        url = "https://rbunagpur.in/team-cdpc/"
-        names = _extract_people_names_from_url(url)
-        if names:
-            lead = names[0]
-            return {
-                "answer": (
-                    f"From the official Team CDPC page, a listed key contact is {lead}. "
-                    "I can also summarize placement initiatives and recruiter highlights if you want."
-                ),
-                "sources": [url],
-            }
-
-    return None
+def _is_hostel_fees_query(question: str) -> bool:
+    return _is_hostel_query(question) and _is_fees_query(question)
 
 
 def _expand_query_for_retrieval(question: str) -> str:
@@ -247,17 +238,20 @@ def _expand_query_for_retrieval(question: str) -> str:
     q = (question or "").lower()
     expanded = [question]
 
-    if any(token in q for token in ["dean", "deans"]):
-        expanded.append("rbu deans directors academic leadership")
-
-    if any(token in q for token in ["director", "directors"]):
-        expanded.append("rbu directors leadership administration")
-
-    if "cdpc" in q or ("team" in q and "placement" in q):
-        expanded.append("rbu team cdpc placement cell")
-
     if "scholarship" in q or "financial aid" in q:
         expanded.append("rbu scholarships financial aid")
+
+    if _is_fees_query(question):
+        expanded.append("rbu full fees structure 2026 27 tuition development caution total all programs schools")
+
+    if _is_hostel_query(question):
+        expanded.append("rbu hostel facilities accommodation mess room charges fee structure")
+
+    if _is_programs_query(question):
+        expanded.append("rbu complete program list all schools departments ug pg phd programs offered")
+
+    if _is_rbu_overview_query(question):
+        expanded.append("rbu overview admissions programs fees placements hostel scholarships accreditation")
 
     return " ".join(expanded).strip()
 
@@ -303,11 +297,9 @@ def store_documents(documents: list[dict]) -> int:
             })
 
     if all_chunks:
-        # Embed all chunks with Chroma's built-in embedding model.
         print(f"[Brain] Embedding {len(all_chunks)} chunks...")
         embeddings = embedder(all_chunks)
 
-        # Store in batches (ChromaDB has limits)
         batch_size = 100
         for i in range(0, len(all_chunks), batch_size):
             end = min(i + batch_size, len(all_chunks))
@@ -339,7 +331,6 @@ def retrieve_context(query: str, n_results: int = 4) -> list[dict]:
     if collection.count() == 0:
         return []
 
-    # Embed the query
     query_embedding = embedder([query])
 
     results = collection.query(
@@ -363,43 +354,75 @@ def retrieve_context(query: str, n_results: int = 4) -> list[dict]:
                 )
             })
 
-    # Boost known governance/team pages for intent-specific queries.
-    q = (query or "").lower()
-    target_urls = []
-    if any(token in q for token in ["dean", "deans"]):
-        target_urls.append("https://rbunagpur.in/deans/")
-    if any(token in q for token in ["director", "directors"]):
-        target_urls.append("https://rbunagpur.in/directors/")
-    if "cdpc" in q or ("team" in q and "placement" in q):
-        target_urls.append("https://rbunagpur.in/team-cdpc/")
+    if _is_fees_query(query):
+        for fee_url in [
+            "https://rbunagpur.in/fees-structure-26-27/",
+            "https://rbunagpur.in/fees-structure/",
+        ]:
+            try:
+                pinned = collection.get(where={"url": fee_url}, include=["documents", "metadatas"])
+                docs = pinned.get("documents") or []
+                metas = pinned.get("metadatas") or []
+                for i, doc in enumerate(docs[:6]):
+                    meta = metas[i] if i < len(metas) else {}
+                    contexts.append({
+                        "text": doc,
+                        "url": meta.get("url", fee_url),
+                        "title": meta.get("title", ""),
+                        "distance": None,
+                    })
+            except Exception:
+                continue
 
-    boosted_contexts = []
-    for url in target_urls:
-        try:
-            pinned = collection.get(where={"url": url}, include=["documents", "metadatas"])
-            docs = pinned.get("documents") or []
-            metas = pinned.get("metadatas") or []
-            for i, doc in enumerate(docs[:2]):  # First chunks usually carry headings/names.
-                meta = metas[i] if i < len(metas) else {}
-                boosted_contexts.append({
-                    "text": doc,
-                    "url": meta.get("url", url),
-                    "title": meta.get("title", ""),
-                    "distance": None,
-                })
-        except Exception:
-            continue
+    if _is_hostel_query(query):
+        for h_url in ["https://rbunagpur.in/hostel-facilities/"]:
+            try:
+                pinned = collection.get(where={"url": h_url}, include=["documents", "metadatas"])
+                docs = pinned.get("documents") or []
+                metas = pinned.get("metadatas") or []
+                for i, doc in enumerate(docs[:6]):
+                    meta = metas[i] if i < len(metas) else {}
+                    contexts.append({
+                        "text": doc,
+                        "url": meta.get("url", h_url),
+                        "title": meta.get("title", ""),
+                        "distance": None,
+                    })
+            except Exception:
+                continue
 
-    if boosted_contexts:
-        # Keep boosted contexts first, then append non-duplicate semantic results.
-        seen = {(c.get("url"), c.get("text")) for c in boosted_contexts}
-        deduped = boosted_contexts[:]
+    if _is_programs_query(query):
+        for p_url in [
+            "https://rbunagpur.in/program-list-2026-2027/",
+            "https://rbunagpur.in/program-list/",
+        ]:
+            try:
+                pinned = collection.get(where={"url": p_url}, include=["documents", "metadatas"])
+                docs = pinned.get("documents") or []
+                metas = pinned.get("metadatas") or []
+                for i, doc in enumerate(docs[:8]):
+                    meta = metas[i] if i < len(metas) else {}
+                    contexts.append({
+                        "text": doc,
+                        "url": meta.get("url", p_url),
+                        "title": meta.get("title", ""),
+                        "distance": None,
+                    })
+            except Exception:
+                continue
+
+    if contexts:
+        seen = set()
+        deduped = []
         for c in contexts:
             key = (c.get("url"), c.get("text"))
-            if key not in seen:
-                deduped.append(c)
-                seen.add(key)
-        contexts = deduped[: max(n_results, len(boosted_contexts))]
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(c)
+        contexts = deduped
+
+    contexts = [c for c in contexts if not _is_excluded_source(c.get("url", ""))]
 
     return contexts
 
@@ -412,24 +435,13 @@ def generate_response(question: str) -> dict:
     3. Call HuggingFace LLM
     4. Return response
     """
-    deterministic = _deterministic_people_response(question)
-    if deterministic:
-        return deterministic
-
-    if not HF_TOKEN:
-        return {
-            "answer": "Error: HuggingFace API token not configured. Please set HF_TOKEN in your .env file.",
-            "sources": []
-        }
-
-    # Step 1: Retrieve context
-    contexts = retrieve_context(question)
+    top_k = 10 if (_is_fees_query(question) or _is_programs_query(question) or _is_hostel_query(question)) else 4
+    contexts = retrieve_context(question, n_results=top_k)
     if not contexts:
         expanded_query = _expand_query_for_retrieval(question)
         if expanded_query != question:
-            contexts = retrieve_context(expanded_query)
+            contexts = retrieve_context(expanded_query, n_results=top_k)
 
-    # Filter out weak/irrelevant retrievals to avoid unrelated sources.
     relevant_contexts = [
         c
         for c in contexts
@@ -440,11 +452,10 @@ def generate_response(question: str) -> dict:
         )
     ]
 
-    # If strict relevance removed everything, retry once with expanded query.
     if not relevant_contexts:
         expanded_query = _expand_query_for_retrieval(question)
         if expanded_query != question:
-            expanded_contexts = retrieve_context(expanded_query)
+            expanded_contexts = retrieve_context(expanded_query, n_results=top_k)
             relevant_contexts = [
                 c
                 for c in expanded_contexts
@@ -455,9 +466,26 @@ def generate_response(question: str) -> dict:
                 )
             ]
 
-    # For broad overview asks, fall back to top retrievals even if lexical filter is strict.
     if not relevant_contexts and _is_rbu_overview_query(question) and contexts:
         relevant_contexts = contexts
+
+    if not relevant_contexts and contexts and len(_query_terms(question)) <= 2:
+        relevant_contexts = contexts
+
+    if _is_fees_query(question) and not _is_hostel_fees_query(question):
+        fee_only = [c for c in relevant_contexts if _is_fees_source(c.get("url", ""))]
+        if fee_only:
+            relevant_contexts = fee_only
+
+    if _is_programs_query(question):
+        program_only = [c for c in relevant_contexts if _is_programs_source(c.get("url", ""))]
+        if program_only:
+            relevant_contexts = program_only
+
+    if _is_hostel_query(question):
+        hostel_only = [c for c in relevant_contexts if "hostel-facilities" in (c.get("url", ""))]
+        if hostel_only:
+            relevant_contexts = hostel_only
 
     if not relevant_contexts:
         return {
@@ -465,11 +493,26 @@ def generate_response(question: str) -> dict:
             "sources": []
         }
 
+    source_urls = list(
+        set([
+            c["url"]
+            for c in relevant_contexts
+            if c["url"] and not _is_excluded_source(c["url"])
+            and (not _is_fees_query(question) or _is_hostel_fees_query(question) or _is_fees_source(c["url"]))
+            and (not _is_programs_query(question) or _is_programs_source(c["url"]))
+        ])
+    )
+
+    if not HF_TOKEN:
+        return {
+            "answer": _build_fallback_answer(question, relevant_contexts, reason="HF token missing"),
+            "sources": source_urls,
+        }
+
     context_text = "\n\n---\n\n".join([
         f"Source: {c['title']}\n{c['text']}" for c in relevant_contexts
     ])
 
-    # Step 2: Build the prompt
     system_prompt = (
         "You are the RBU Nagpur Assistant. You help students and parents with "
         "information about RBU Nagpur. "
@@ -480,13 +523,25 @@ def generate_response(question: str) -> dict:
         f"Context:\n{context_text}"
     )
 
+    if _is_fees_query(question):
+        system_prompt += (
+            "\n\nFor fee-structure questions, provide complete coverage of all programs visible in context. "
+            "Use a clean structured list with Tuition, Development, Caution, and Total wherever available."
+        )
+
+    if _is_programs_query(question):
+        system_prompt += (
+            "\n\nFor program-list questions, provide a comprehensive list of programs from all schools visible in context. "
+            "Group by school/department when possible and include UG, PG, and PhD entries available in context."
+        )
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": question}
     ]
 
-    # Step 3: Call the LLM
     response = None
+    answer = ""
     try:
         response = requests.post(
             HF_ROUTER_URL,
@@ -497,7 +552,7 @@ def generate_response(question: str) -> dict:
             json={
                 "model": LLM_MODEL,
                 "messages": messages,
-                "max_tokens": 1024,
+                "max_tokens": 1500 if (_is_fees_query(question) or _is_programs_query(question)) else 1024,
                 "temperature": 0.7,
             },
             timeout=120,
@@ -506,20 +561,19 @@ def generate_response(question: str) -> dict:
         data = response.json()
         answer = _to_plain_text(data["choices"][0]["message"]["content"])
     except requests.HTTPError:
-        detail = ""
+        detail = "LLM HTTP error"
         try:
-            detail = response.json().get("error", {}).get("message", "")
+            detail = response.json().get("error", {}).get("message", "") or detail
         except Exception:
-            detail = response.text[:300] if response is not None else ""
-        answer = f"Error generating response: HTTP {response.status_code}. {detail}".strip()
+            detail = response.text[:300] if response is not None else detail
+        answer = _build_fallback_answer(question, relevant_contexts, reason=detail)
     except Exception as e:
-        answer = f"Error generating response: {str(e)}"
+        answer = _build_fallback_answer(question, relevant_contexts, reason=str(e))
 
-    # Step 4: Return with sources
     if _is_no_info_answer(answer):
         sources = []
     else:
-        sources = list(set([c["url"] for c in relevant_contexts if c["url"]]))
+        sources = source_urls
 
     return {
         "answer": answer,

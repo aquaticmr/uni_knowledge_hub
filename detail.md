@@ -1,73 +1,122 @@
+# RBU AI Assistant - Implementation Reference
 
-### **Project Title: RBU-Nagpur AI Admission & Placement Assistant**
+## 1. What has been implemented
 
-**Goal:** Create a RAG (Retrieval-Augmented Generation) web application that scrapes https://rbunagpur.in/, processes university-specific data (fees, admissions, placements), and provides a chatbot interface.
+This repository now contains a complete RBU-focused RAG assistant with:
 
----
+- FastAPI backend for chat, stats, scraping, and policy testing.
+- ChromaDB persistent vector store (`backend/rbu_chroma_db/`).
+- Web scraper with HTML parsing, table extraction, and OCR hooks.
+- Policy router in `main.py` for mandatory fixed responses before RAG.
+- Retrieval + generation pipeline in `brain.py`.
+- Resilience fallback in `brain.py`: if Hugging Face router is unreachable (DNS/network/HTTP issues), the API returns a retrieval-based summary with sources instead of a raw exception string.
+- React frontend chat interface.
 
-#### **1. Technical Architecture & Models**
-*   **Backend:** FastAPI (Python).
-*   **Vector Database:** `ChromaDB` (Persistent local storage).
-*   **Embedding Model:** `sentence-transformers/all-MiniLM-L6-v2` (Local).
-*   **LLM:** `mistralai/Mistral-7B-Instruct-v0.2` via **Hugging Face Inference API**.
-*   **OCR & Parsing:** `BeautifulSoup`, `pdf2image`, and `pytesseract` (to handle scanned placement graphs and PDF fee tables).
-*   **Frontend:** React + Tailwind CSS.
+## 2. Core tech stack
 
----
+- Backend API: FastAPI + Uvicorn
+- Retrieval store: ChromaDB
+- Embeddings: Chroma default ONNX embedding function (`all-MiniLM` family)
+- LLM endpoint: Hugging Face Router (`https://router.huggingface.co/v1/chat/completions`)
+- Scraping/parsing: `requests`, `beautifulsoup4`, `lxml`, `markdownify`
+- OCR helpers: `pdf2image`, `pytesseract`, `Pillow`
+- Frontend: React + Vite + Tailwind
 
-#### **2. Detailed Implementation Instructions**
+## 3. File map (what each file does)
 
-**Phase 1: Specialized Scraper (`scraper.py`)**
-1.  **URL Discovery:** Use `https://rbunagpur.in/page-sitemap.xml` as the primary source of URLs.
-2.  **Strict Content Filtering:** Only scrape pages that contain these keywords in the URL or Title: `['admission', 'eligibility', 'cutoff', 'fees', 'hostel', 'programs', 'placement', 'recruiters', 'cdpc']`.
-3.  **Data Extraction Logic:**
-    *   **HTML Tables:** Identify `<table>` tags and convert them into **Markdown format** (essential for the LLM to understand Fee structures).
-    *   **Scanned Docs & PDFs:** If a page contains a PDF or image (e.g., placement statistics graphs), use `pdf2image` and `pytesseract` to extract text.
-    *   **Clean Text:** Remove navigation menus, social media links, and footer junk.
-4.  **One-Time Execution:** Check if the directory `./rbu_chroma_db` exists. If yes, skip scraping. If no, scrape and store.
+- `backend/main.py`
+: FastAPI app lifecycle, startup scrape, endpoints (`/chat`, `/stats`, `/health`, `/scrape-status`, `/rescrape`, `/scrape-urls`, `/chat-policy-test`), and mandatory policy routing.
 
-**Phase 2: Vector Store & RAG Logic (`brain.py`)**
-1.  Chunk the text into 1000 characters with 200-character overlap.
-2.  Use **`all-MiniLM-L6-v2`** to create embeddings and store them in a local ChromaDB collection.
-3.  Implement a retrieval function that takes a user query, finds the top 4 chunks, and constructs a prompt for the Hugging Face API.
-4.  **System Prompt:** "You are the RBU Nagpur Assistant. Use the following context to answer the question. If the data is in a table, provide a structured summary. Context: {context}".
+- `backend/brain.py`
+: Chunking, Chroma indexing, retrieval, prompt building, HF model call, source extraction, deterministic people responses, and LLM outage fallback summarization.
 
-**Phase 3: FastAPI Backend (`main.py`)**
-1.  **Endpoint `GET /stats`**: Returns the count of unique text chunks/documents in ChromaDB.
-2.  **Endpoint `POST /chat`**: Receives the user question and returns the generated LLM response.
-3.  Setup CORS to allow communication with the React frontend.
+- `backend/scraper.py`
+: URL scraping, clean text extraction, table extraction, OCR-assisted content extraction, and batch document return.
 
-**Phase 4: Frontend Development (`App.jsx`)**
-1.  **Sidebar (Left):** A box titled "RBU Knowledge Hub" showing the total number of "Scanned Chunks" (fetched from `/stats`).
-2.  **Chat Interface (Right):** 
-    *   A scrollable area for chat history.
-    *   Distinct message bubbles for "User" and "AI Assistant".
-    *   A loading spinner when waiting for a response.
-    *   Branding: Use RBU's Navy Blue and White theme.
+- `backend/chroma_noop.py`
+: No-op telemetry shim to avoid telemetry-related runtime issues.
 
----
+- `backend/test_policy_router.py`
+: Unit tests for mandatory policy case detection logic.
 
-#### **3. Expected Output**
-Please provide the code for:
-1.  `requirements.txt`
-2.  `scraper.py` (Handling sitemap + OCR + Table-to-Markdown).
-3.  `main.py` (FastAPI + RAG logic + Hugging Face Integration).
-4.  `ChatInterface.js` (The React component).
+- `backend/requirements.txt`
+: Python dependencies for backend and scraper pipeline.
 
----
+- `frontend/src/components/ChatInterface.jsx`
+: Chat UI, message rendering, source display, and API calls.
 
-### **Preparation Checklist for You (The Developer)**
+- `frontend/src/App.jsx`
+: App shell and layout integration.
 
-Before you run the code that Copilot generates, make sure you have these system-level tools installed:
+- `workflow.md`
+: End-to-end architecture and operational flow documentation.
 
-1.  **Tesseract OCR Engine:** 
-    *   Windows: [Download here](https://github.com/UB-Mannheim/tesseract/wiki).
-    *   Mac: `brew install tesseract`.
-    *   *Crucial:* Note the path where it's installed (usually `C:\Program Files\Tesseract-OCR\tesseract.exe`).
-2.  **Poppler (for PDFs):**
-    *   Windows: [Download here](https://github.com/oschwartz10612/poppler-windows/releases/), unzip, and add the `bin` folder to your System Environment Path.
-    *   Mac: `brew install poppler`.
-3.  **Hugging Face API Token:**
-    *   Create a free account at [huggingface.co](https://huggingface.co/).
-    *   Go to **Settings > Access Tokens** and create a "Read" token. You will paste this into the code where it says `HF_TOKEN`.
+## 4. Runtime flow (short)
+
+1. Backend starts.
+2. Lifespan checks vector DB chunk count.
+3. If empty, startup URLs are scraped and indexed in background.
+4. User sends question to `/chat`.
+5. Policy router checks mandatory response cases.
+6. If no policy hit, RAG retrieval runs from Chroma.
+7. Backend tries Hugging Face generation.
+8. If HF fails, backend returns retrieval-only fallback summary with source URLs.
+
+## 5. Required setup
+
+## 5.1 Python and Node
+
+- Python 3.11+
+- Node.js 18+
+
+## 5.2 Backend dependencies
+
+Install from:
+
+- `backend/requirements.txt`
+
+## 5.3 Environment variables
+
+Create `backend/.env` with:
+
+- `HF_TOKEN=<your_token>`
+- `HF_MODEL=meta-llama/Llama-3.1-8B-Instruct` (or any router-supported model)
+- `STARTUP_SCRAPE_URLS=<comma-separated URLs>` (optional; defaults exist in `main.py`)
+
+## 5.4 Optional OCR system tools
+
+- Tesseract OCR installed and available on PATH.
+- Poppler installed and available on PATH.
+
+Without these tools, OCR-heavy extraction paths may be limited.
+
+## 6. Run commands
+
+Backend:
+
+```powershell
+Set-Location "d:\Projects\Mohit_Rudrakar\backend"
+d:\Projects\Mohit_Rudrakar\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```powershell
+Set-Location "d:\Projects\Mohit_Rudrakar\frontend"
+npm install
+npm run dev
+```
+
+## 7. Health checks
+
+- `GET /health` -> backend liveness
+- `GET /stats` -> indexed chunk count
+- `GET /scrape-status` -> current ingestion status
+- `POST /chat-policy-test` -> verify mandatory route behavior
+
+## 8. Current known behavior
+
+- If RBU data is indexed, startup skip logic avoids re-scraping.
+- If RBU data is empty, auto-scrape starts in background.
+- If HF Router DNS/network fails, user sees an informative fallback answer from retrieved context with citations instead of raw `HTTPSConnectionPool` exception text.
 

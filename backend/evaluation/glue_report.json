@@ -1,0 +1,9 @@
+{
+  "task": "sst2",
+  "model": "distilbert-base-uncased-finetuned-sst-2-english",
+  "split": "validation",
+  "max_samples": 500,
+  "scores": {
+    "accuracy": 0.912
+  }
+}
