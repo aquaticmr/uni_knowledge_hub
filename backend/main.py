@@ -65,6 +65,8 @@ def _normalize_query(text: str) -> str:
     normalized = (text or "").lower().strip()
     normalized = re.sub(r"[^a-z0-9+\s-]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
+
+    print("normalization successfully")
     return normalized
 
 
